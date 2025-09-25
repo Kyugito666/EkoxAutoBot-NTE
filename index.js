@@ -1065,32 +1065,10 @@ const swapSubMenu = blessed.list({
     item: { fg: "white" }
   },
   items: [
-    "AUTO SWAP ETH to WETH",
-    "AUTO SWAP WETH to ETH",
+    "AUTO SWAP ETH to WETH (ALL WALLETS)",
+    "AUTO SWAP WETH to ETH (ALL WALLETS)",
     "Back to Main Menu"
   ],
-  padding: { left: 1, top: 1 },
-  hidden: true
-});
-
-const walletSelectionList = blessed.list({
-  label: " Select Wallet ",
-  top: "center",
-  left: "center",
-  width: "50%",
-  height: "50%",
-  keys: true,
-  vi: true,
-  mouse: true,
-  border: { type: "line" },
-  style: {
-    fg: "white",
-    bg: "default",
-    border: { fg: "yellow" },
-    selected: { bg: "yellow", fg: "black" },
-    item: { fg: "white" }
-  },
-  items: [],
   padding: { left: 1, top: 1 },
   hidden: true
 });
@@ -1244,7 +1222,6 @@ screen.append(logBox);
 screen.append(menuBox);
 screen.append(dailyActivitySubMenu);
 screen.append(swapSubMenu);
-screen.append(walletSelectionList);
 screen.append(amountForm);
 screen.append(configForm);
 
@@ -1301,8 +1278,6 @@ function adjustLayout() {
     swapSubMenu.left = menuBox.left;
     configForm.width = Math.floor(screenWidth * 0.3);
     configForm.height = Math.floor(screenHeight * 0.4);
-    walletSelectionList.width = Math.floor(screenWidth * 0.5);
-    walletSelectionList.height = Math.floor(screenHeight * 0.5);
     amountForm.width = Math.floor(screenWidth * 0.3);
     amountForm.height = Math.floor(screenHeight * 0.4);
   }
@@ -1370,12 +1345,6 @@ function updateMenu() {
   } catch (error) {
     addLog(`Menu update failed: ${error.message}`, "error");
   }
-}
-
-async function updateWalletSelectionList() {
-  const walletItems = accounts.map((account, i) => `${i + 1}: ${getShortAddress(new ethers.Wallet(account.privateKey).address)}`);
-  walletSelectionList.setItems(walletItems);
-  safeRender();
 }
 
 const statusInterval = setInterval(updateStatus, 100);
@@ -1617,19 +1586,18 @@ dailyActivitySubMenu.on("select", (item) => {
 swapSubMenu.on("select", async (item) => {
   const action = item.getText();
   switch (action) {
-    case "AUTO SWAP ETH to WETH":
-    case "AUTO SWAP WETH to ETH":
-      amountForm.swapType = action === "AUTO SWAP ETH to WETH" ? "wrap" : "unwrap";
+    case "AUTO SWAP ETH to WETH (ALL WALLETS)":
+    case "AUTO SWAP WETH to ETH (ALL WALLETS)":
+      amountForm.swapType = action.includes("ETH to WETH") ? "wrap" : "unwrap";
       amountForm.setLabel(` Enter Amount for ${action} `);
       swapSubMenu.hide();
-      await updateWalletSelectionList();
-      walletSelectionList.show();
+      amountForm.show();
       setTimeout(() => {
-        if (walletSelectionList.visible) {
-          screen.focusPush(walletSelectionList);
-          walletSelectionList.style.border.fg = "yellow";
-          safeRender();
-        }
+          if (amountForm.visible) {
+              screen.focusPush(amountInput);
+              amountInput.clearValue();
+              safeRender();
+          }
       }, 100);
       break;
     case "Back to Main Menu":
@@ -1646,20 +1614,6 @@ swapSubMenu.on("select", async (item) => {
       }, 100);
       break;
   }
-});
-
-walletSelectionList.on("select", (item) => {
-  const selectedIndex = walletSelectionList.selected;
-  selectedWalletIndex = selectedIndex;
-  walletSelectionList.hide();
-  amountForm.show();
-  setTimeout(() => {
-    if (amountForm.visible) {
-      screen.focusPush(amountInput);
-      amountInput.clearValue();
-      safeRender();
-    }
-  }, 100);
 });
 
 let isSubmitting = false;
@@ -1699,23 +1653,36 @@ amountForm.on("submit", async () => {
     }
   }, 100);
 
-  const proxyUrl = proxies[selectedWalletIndex % proxies.length] || null;
-  const wallet = new ethers.Wallet(accounts[selectedWalletIndex].privateKey);
-  const direction = directions[0];
+  // --- NEW LOGIC: Loop through all wallets ---
+  addLog(`Starting swap for ALL wallets with amount: ${amount}`, "info");
+  for (let i = 0; i < accounts.length; i++) {
+      const account = accounts[i];
+      const proxyUrl = proxies[i % proxies.length] || null;
+      const wallet = new ethers.Wallet(account.privateKey);
+      const direction = directions[0];
 
-  try {
-    if (amountForm.swapType === "wrap") {
-      addLog(`Swapping ${amount} ETH to WETH for account ${selectedWalletIndex + 1}`, "warn");
-      await performWrap(wallet, direction, amount.toFixed(4), proxyUrl);
-    } else {
-      addLog(`Swapping ${amount} WETH to ETH for account ${selectedWalletIndex + 1}`, "warn");
-      await performUnwrap(wallet, direction, amount.toFixed(4), proxyUrl);
-    }
-    await updateWallets();
-  } catch (error) {
-    addLog(`Swap failed: ${error.message}`, "error");
+      addLog(`Processing Wallet ${i + 1}/${accounts.length}: ${getShortAddress(wallet.address)}`, "wait");
+
+      try {
+          if (amountForm.swapType === "wrap") {
+              addLog(`Swapping ${amount} ETH to WETH...`, "warn");
+              await performWrap(wallet, direction, amount.toFixed(4), proxyUrl);
+          } else {
+              addLog(`Swapping ${amount} WETH to ETH...`, "warn");
+              await performUnwrap(wallet, direction, amount.toFixed(4), proxyUrl);
+          }
+      } catch (error) {
+          addLog(`Swap failed for wallet ${getShortAddress(wallet.address)}: ${error.message}`, "error");
+      } finally {
+          if (i < accounts.length - 1) {
+              const delay = 5000; // 5 second delay between wallets
+              addLog(`Waiting ${delay / 1000} seconds before next wallet...`, "delay");
+              await sleep(delay);
+          }
+      }
   }
-
+  addLog("All wallet swap process finished.", "success");
+  await updateWallets(); // Refresh wallet data at the end
   isSubmitting = false;
 });
 
@@ -1733,27 +1700,15 @@ amountSubmitButton.on("click", () => {
 });
 
 amountForm.key(["escape"], () => {
-  amountForm.hide();
-  walletSelectionList.show();
-  setTimeout(() => {
-    if (walletSelectionList.visible) {
-      screen.focusPush(walletSelectionList);
-      walletSelectionList.style.border.fg = "yellow";
-      safeRender();
-    }
-  }, 100);
-});
-
-walletSelectionList.key(["escape"], () => {
-  walletSelectionList.hide();
-  swapSubMenu.show();
-  setTimeout(() => {
-    if (swapSubMenu.visible) {
-      screen.focusPush(swapSubMenu);
-      swapSubMenu.style.border.fg = "yellow";
-      safeRender();
-    }
-  }, 100);
+    amountForm.hide();
+    swapSubMenu.show();
+    setTimeout(() => {
+        if (swapSubMenu.visible) {
+            screen.focusPush(swapSubMenu);
+            swapSubMenu.style.border.fg = "yellow";
+            safeRender();
+        }
+    }, 100);
 });
 
 configForm.on("submit", () => {
